@@ -1,3 +1,4 @@
+import base64
 import importlib
 import json
 import logging
@@ -14,7 +15,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import torch
 import uvicorn
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 from transformers import AutoModel, AutoTokenizer
 
@@ -27,6 +28,14 @@ _PDF_CONTENT_TYPES = {"application/pdf"}
 _RESULT_EXTENSIONS = (".mmd", ".md", ".txt")
 
 _DET_RE = re.compile(r"<\|det\|>([^<\s]+)(?:\s*\[[^\]]*\])?\s*<\|/det\|>(.*)", re.DOTALL)
+
+# "gundam" crops each page into detail tiles (config.IMAGE_SIZE) plus a global view
+# (config.BASE_SIZE) — best for a single, detail-heavy page. "base" runs one uncropped
+# pass at config.BASE_SIZE — faster, better suited to multi-page/PDF throughput.
+_IMAGE_MODE_PRESETS = {
+    "gundam": lambda: {"base_size": config.BASE_SIZE, "image_size": config.IMAGE_SIZE, "crop_mode": True},
+    "base": lambda: {"base_size": config.BASE_SIZE, "image_size": config.BASE_SIZE, "crop_mode": False},
+}
 
 
 def _handle_sigint(signum, frame):
@@ -107,6 +116,16 @@ def _streaming_infer(model, tokenizer, streamer_module, **infer_kwargs):
     if "error" in result:
         raise result["error"]
     return result["value"]
+
+
+def _image_data_uri(path: str) -> str:
+    """Base64-encodes the page image exactly as sent to the model, so the client
+    can overlay <|det|> bounding boxes on pixel-accurate coordinates."""
+    ext = Path(path).suffix.lower().lstrip(".") or "png"
+    mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return f"data:image/{mime};base64,{b64}"
 
 
 def _is_pdf(filename: str, content_type: str | None) -> bool:
@@ -193,7 +212,11 @@ def create_app() -> FastAPI:
         return {"status": "ok", "model": config.MODEL, "device": config.DEVICE}
 
     @app.post("/v1/ocr/parse")
-    def parse_document(file: UploadFile = File(...)):
+    def parse_document(file: UploadFile = File(...), image_mode: str = Form("gundam")):
+        if image_mode not in _IMAGE_MODE_PRESETS:
+            image_mode = "gundam"
+        mode_kwargs = _IMAGE_MODE_PRESETS[image_mode]()
+
         suffix = Path(file.filename).suffix or ".bin"
         work_dir = tempfile.mkdtemp(prefix="ocr_")
         upload_path = os.path.join(work_dir, f"upload{suffix}")
@@ -201,7 +224,7 @@ def create_app() -> FastAPI:
             f.write(file.file.read())
 
         is_pdf = _is_pdf(file.filename, file.content_type)
-        logger.info(f"Received {file.filename} (pdf={is_pdf}) -> {upload_path}")
+        logger.info(f"Received {file.filename} (pdf={is_pdf}, image_mode={image_mode}) -> {upload_path}")
 
         def generate():
             start = time.time()
@@ -220,6 +243,11 @@ def create_app() -> FastAPI:
                     page_output_dir = os.path.join(work_dir, f"out_{i:04d}")
                     os.makedirs(page_output_dir, exist_ok=True)
 
+                    yield json.dumps({
+                        "type": "page_start", "index": i, "total": total,
+                        "image": _image_data_uri(page_path),
+                    }) + "\n"
+
                     infer_gen = _streaming_infer(
                         model,
                         tokenizer,
@@ -227,9 +255,9 @@ def create_app() -> FastAPI:
                         prompt="<image>document parsing.",
                         image_file=page_path,
                         output_path=page_output_dir,
-                        base_size=config.BASE_SIZE,
-                        image_size=config.IMAGE_SIZE,
-                        crop_mode=config.CROP_MODE,
+                        base_size=mode_kwargs["base_size"],
+                        image_size=mode_kwargs["image_size"],
+                        crop_mode=mode_kwargs["crop_mode"],
                         max_length=config.MAX_LENGTH,
                         no_repeat_ngram_size=35,
                         ngram_window=128,
