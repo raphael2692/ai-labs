@@ -168,21 +168,22 @@ def _render_markdown_preview(md_text: str) -> None:
     otherwise show up as a stray horizontal rule and a plain-text paragraph;
     here title/subtitle render as an H1/H2 ahead of the body instead."""
     match = _FRONT_MATTER_RE.match(md_text)
-    if not match:
-        st.markdown(md_text)
-        return
+    with st.container(border=True):
+        if not match:
+            st.markdown(md_text)
+            return
 
-    meta = {}
-    for line in match.group(1).splitlines():
-        if ":" in line:
-            key, _, value = line.partition(":")
-            meta[key.strip().lower()] = value.strip().strip("\"'")
+        meta = {}
+        for line in match.group(1).splitlines():
+            if ":" in line:
+                key, _, value = line.partition(":")
+                meta[key.strip().lower()] = value.strip().strip("\"'")
 
-    if meta.get("title"):
-        st.markdown(f"# {meta['title']}")
-    if meta.get("subtitle"):
-        st.markdown(f"## {meta['subtitle']}")
-    st.markdown(md_text[match.end() :])
+        if meta.get("title"):
+            st.markdown(f"# {meta['title']}")
+        if meta.get("subtitle"):
+            st.markdown(f"## {meta['subtitle']}")
+        st.markdown(md_text[match.end() :])
 
 
 def _prompt_editor(title: str, select_key: str, enabled: bool = True) -> str:
@@ -283,6 +284,7 @@ if start and uploaded_file is not None:
     st.session_state.extract_pages = []
     st.session_state.extract_live_raw = ""
     st.session_state.extract_total_pages = None
+    st.session_state.extract_audio_duration = None
     st.session_state.extract_meta = ""
     st.session_state.error = None
     st.session_state.stage = "extracting"
@@ -324,10 +326,13 @@ def _poll_extraction():
 def _handle_extract_event(kind, event):
     if kind == "audio":
         if event["type"] == "info":
+            st.session_state.extract_audio_duration = event["duration"]
             st.session_state.extract_meta = f"Language: {event['language']} · Duration: {event['duration']:.1f}s"
         elif event["type"] == "segment":
             st.session_state.extract_live_raw += event["text"] + " "
-            st.session_state.extract_meta = f"Transcribing... {event['end']:.1f}s / {event['duration']:.1f}s"
+            duration = st.session_state.get("extract_audio_duration")
+            duration_str = f"{duration:.1f}s" if duration is not None else "?"
+            st.session_state.extract_meta = f"Transcribing... {event['end']:.1f}s / {duration_str}"
         elif event["type"] == "done":
             st.session_state.final_text = event["text"]
     else:
@@ -379,11 +384,17 @@ if st.session_state.stage in _POST_EXTRACT_STAGES:
         with st.expander(f"Structured extraction ({len(st.session_state.final_structure)} page(s), JSON)"):
             st.json(st.session_state.final_structure)
 
-    st.divider()
-    st.subheader("4. Run pipeline")
-    if st.button("🚀 Run pipeline", type="primary", disabled=st.session_state.stage != "extracted"):
+    if st.session_state.stage == "extracted":
         user_content = _build_user_content(st.session_state.final_text, st.session_state.final_structure)
-        if st.session_state.revision_enabled:
+        if st.session_state.error:
+            # A generation error bounced the stage back to "extracted" — don't
+            # auto-retry into the same failure, wait for an explicit retry.
+            if st.button("🔁 Retry"):
+                if st.session_state.revision_enabled:
+                    _start_generation("revision", revision_prompt_text, user_content)
+                else:
+                    _start_generation("format", formatting_prompt_text, user_content)
+        elif st.session_state.revision_enabled:
             _start_generation("revision", revision_prompt_text, user_content)
         else:
             _start_generation("format", formatting_prompt_text, user_content)
@@ -432,14 +443,18 @@ if st.session_state.revision_enabled and st.session_state.stage in ("revising", 
         _poll_generation()
     else:
         st.text_area(
-            "Revised content (edit if needed before formatting)",
+            "Revised content",
             key="revised_text",
             height=240,
-            disabled=st.session_state.stage != "revised",
+            disabled=True,
         )
-        if st.session_state.stage == "revised" and st.button("➡ Continue to formatting", type="primary"):
+        if st.session_state.stage == "revised":
             user_content = _build_user_content(st.session_state.revised_text, None)
-            _start_generation("format", formatting_prompt_text, user_content)
+            if st.session_state.error:
+                if st.button("🔁 Retry formatting"):
+                    _start_generation("format", formatting_prompt_text, user_content)
+            else:
+                _start_generation("format", formatting_prompt_text, user_content)
 
 # --- 6. Result -----------------------------------------------------------------
 
@@ -457,3 +472,28 @@ if st.session_state.stage in ("formatting", "done"):
             mime="text/markdown",
             type="primary",
         )
+
+        with st.expander("⬇ Download intermediate results (resume from an earlier step elsewhere)"):
+            st.download_button(
+                "Extracted text (.txt)",
+                data=st.session_state.final_text,
+                file_name=f"{st.session_state.file_stem}.extracted.txt",
+                mime="text/plain",
+                key="dl_extracted_text",
+            )
+            if st.session_state.final_structure:
+                st.download_button(
+                    "Structured extraction (.json)",
+                    data=json.dumps(st.session_state.final_structure, ensure_ascii=False, indent=2),
+                    file_name=f"{st.session_state.file_stem}.extracted.json",
+                    mime="application/json",
+                    key="dl_extracted_json",
+                )
+            if st.session_state.revision_enabled:
+                st.download_button(
+                    "Revised text (.txt)",
+                    data=st.session_state.revised_text,
+                    file_name=f"{st.session_state.file_stem}.revised.txt",
+                    mime="text/plain",
+                    key="dl_revised_text",
+                )
