@@ -17,6 +17,9 @@ apps/*/.env
 # Streamlit
 .streamlit/secrets.toml
 
+# Pipeline app - user-local saved prompts
+apps/pipeline/prompts.json
+
 # Unsloth runtime cache
 servers/unsloth/unsloth_compiled_cache/
 

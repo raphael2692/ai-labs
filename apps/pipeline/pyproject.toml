@@ -1,0 +1,15 @@
+[project]
+name = "pipeline-app"
+version = "0.1.0"
+description = "Streamlit app: extract text from an audio/PDF/image file, then run it through a stored, user-editable prompt to produce Markdown."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ai-lab-common",
+]
+
+[tool.uv.sources]
+ai-lab-common = { workspace = true }
+
+[tool.uv]
+package = false
