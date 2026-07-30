@@ -1,4 +1,4 @@
-# Starts the Unsloth Studio LLM server on this machine.
+# Starts the Unsloth LLM server (llama-server via `unsloth run`) on this machine.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
@@ -15,14 +15,18 @@ Get-Content ".env" | ForEach-Object {
     }
 }
 
+if (-not $env:UNSLOTH_MODEL) {
+    Write-Host "UNSLOTH_MODEL is not set. Edit .env, e.g.:"
+    Write-Host '  UNSLOTH_MODEL=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL'
+    exit 1
+}
+
 $hostAddr = if ($env:UNSLOTH_HOST) { $env:UNSLOTH_HOST } else { "0.0.0.0" }
 $port = if ($env:UNSLOTH_PORT) { $env:UNSLOTH_PORT } else { "8888" }
 
 uv sync
 
-if ($env:UNSLOTH_MODEL) {
-    uv run unsloth studio -H $hostAddr -p $port --model $env:UNSLOTH_MODEL
-} else {
-    Write-Host "UNSLOTH_MODEL is not set in .env - starting without a preselected model."
-    uv run unsloth studio -H $hostAddr -p $port
-}
+# Binding to a non-loopback address disables server-side tools (web search, code
+# exec) by default and prompts for confirmation; -y skips that prompt for this
+# non-interactive script. Add --enable-tools yourself if you want them anyway.
+uv run unsloth run --model $env:UNSLOTH_MODEL -H $hostAddr -p $port -y

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Starts the Unsloth Studio LLM server on this machine.
+# Starts the Unsloth LLM server (llama-server via `unsloth run`) on this machine.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
@@ -12,14 +12,18 @@ set -a
 source .env
 set +a
 
+if [ -z "${UNSLOTH_MODEL:-}" ]; then
+    echo "UNSLOTH_MODEL is not set. Edit .env, e.g.:"
+    echo '  UNSLOTH_MODEL=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL'
+    exit 1
+fi
+
 UNSLOTH_HOST="${UNSLOTH_HOST:-0.0.0.0}"
 UNSLOTH_PORT="${UNSLOTH_PORT:-8888}"
 
 uv sync
 
-if [ -n "${UNSLOTH_MODEL:-}" ]; then
-    uv run unsloth studio -H "$UNSLOTH_HOST" -p "$UNSLOTH_PORT" --model "$UNSLOTH_MODEL"
-else
-    echo "UNSLOTH_MODEL is not set in .env - starting without a preselected model."
-    uv run unsloth studio -H "$UNSLOTH_HOST" -p "$UNSLOTH_PORT"
-fi
+# Binding to a non-loopback address disables server-side tools (web search, code
+# exec) by default and prompts for confirmation; -y skips that prompt for this
+# non-interactive script. Add --enable-tools yourself if you want them anyway.
+uv run unsloth run --model "$UNSLOTH_MODEL" -H "$UNSLOTH_HOST" -p "$UNSLOTH_PORT" -y

@@ -1,13 +1,13 @@
 # ai-lab
 
-Personal AI lab: an LLM inference server (Unsloth Studio), a speech-to-text server (Whisper), and a
-growing collection of Streamlit apps built on top of both.
+Personal AI lab: an LLM inference server (Unsloth, via `unsloth run`), a speech-to-text server (Whisper),
+and a growing collection of Streamlit apps built on top of both.
 
 ## Layout
 
 ```
 servers/
-  unsloth/     # OpenAI-compatible LLM API server (Unsloth Studio)
+  unsloth/     # OpenAI/Anthropic-compatible LLM API server (unsloth run)
   whisper/     # GPU-backed speech-to-text HTTP API (faster-whisper)
 apps/
   common/      # shared config + HTTP clients used by every app
@@ -32,8 +32,8 @@ Apps never hardcode `localhost` for these — they read `WHISPER_API_URL` / `UNS
 (or override per-session in the sidebar), so a given app can point at servers on any host.
 
 1. **Whisper server** — see [servers/whisper/README.md](servers/whisper/README.md).
-2. **Unsloth server** — see [servers/unsloth/README.md](servers/unsloth/README.md). Requires a one-time
-   manual step to generate an API key.
+2. **Unsloth server** — see [servers/unsloth/README.md](servers/unsloth/README.md). Prints its API key to
+   the console on first run — copy it into `.env`.
 
 ## Apps
 
