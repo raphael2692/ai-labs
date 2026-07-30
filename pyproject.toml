@@ -10,4 +10,7 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
+# servers/unsloth is intentionally excluded: it's driven by a globally-installed
+# `unsloth` CLI (see servers/unsloth/README.md), not a Python/uv project.
 members = ["servers/*", "apps/*"]
+exclude = ["servers/unsloth"]

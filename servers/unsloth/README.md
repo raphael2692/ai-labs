@@ -1,15 +1,27 @@
 # Unsloth Server
 
-Runs [Unsloth](https://unsloth.ai) as an OpenAI/Anthropic-compatible LLM API server
+Runs [Unsloth Studio](https://unsloth.ai) as an OpenAI/Anthropic-compatible LLM API server
 (`/v1/chat/completions`, `/v1/messages`, `/v1/models`), via `unsloth run` (a `llama-server` wrapper
 that loads a GGUF model). Like `servers/whisper`, this folder is self-contained and meant to be copied to
 whichever machine hosts your model.
 
+**This folder has no `pyproject.toml` on purpose.** Unsloth Studio and the `pip install unsloth` package
+are two unrelated products that happen to share a name:
+
+- **Unsloth Studio** (what these scripts drive) is installed by a standalone installer that manages its
+  own isolated environment and puts a global `unsloth` CLI on your PATH. It is *not* a Python dependency
+  of this project.
+- **`pip install unsloth`** ("Unsloth Core") is the separate fine-tuning library — unrelated to running
+  this server. Do not add it to a `pyproject.toml` here; it does not provide the `unsloth run`/`unsloth
+  studio` CLI.
+
 ## First-time setup
 
-1. `uv sync` — installs `unsloth` and its (CUDA/torch-specific) dependencies. If this fails, follow
-   Unsloth's own install instructions for your CUDA/torch version and adjust `pyproject.toml` accordingly
-   — the exact wheel constraints vary by GPU/driver.
+1. Install Unsloth Studio globally on this machine (one-time; the same command updates it later):
+   - Windows (PowerShell): `irm https://unsloth.ai/install.ps1 | iex`
+   - macOS/Linux: `curl -fsSL https://unsloth.ai/install.sh | sh`
+
+   Open a new terminal afterwards so the updated PATH takes effect.
 2. Copy `.env.example` to `.env` and set `UNSLOTH_MODEL` to your favorite model, e.g.
    `unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL` (repo, optionally `:QUANT`).
 3. Start the server (see below). On first run, `unsloth run` prints an endpoint URL and a
@@ -25,7 +37,7 @@ whichever machine hosts your model.
 ./start.ps1     # Windows (PowerShell)
 ```
 
-This loads `.env`, then runs:
+Both scripts check that `unsloth` is on PATH (failing with the install command above if not), then run:
 
 ```
 unsloth run --model $UNSLOTH_MODEL -H $UNSLOTH_HOST -p $UNSLOTH_PORT -y

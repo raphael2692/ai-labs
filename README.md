@@ -20,7 +20,9 @@ scripts/
 
 This is a [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/): every server and app
 is its own package with its own `pyproject.toml`, so dependencies don't bleed between them and each
-`servers/*` folder can be copied to a different machine on its own (see below).
+`servers/*` folder can be copied to a different machine on its own (see below). `servers/unsloth` is the
+exception — it's driven by a globally-installed CLI rather than a Python project (see its README), so it
+has no `pyproject.toml` and is excluded from the workspace.
 
 ## Servers live wherever they want
 
@@ -59,6 +61,8 @@ uv sync
 cp .env.example .env   # then edit it
 ```
 
-`uv sync` at the root installs every workspace member (servers *and* apps) into one shared `.venv`, which
-is convenient for local dev where everything runs on one machine. When deploying a server to a different
-machine, run `uv sync` inside just that server's folder instead (see its README).
+`uv sync --all-packages` at the root installs every workspace member (the Whisper server *and* all apps)
+into one shared `.venv`, which is convenient for local dev where everything runs on one machine. When
+deploying the Whisper server to a different machine, run `uv sync` inside just that folder instead (see
+its README). The Unsloth server needs no `uv sync` at all — see
+[servers/unsloth/README.md](servers/unsloth/README.md).

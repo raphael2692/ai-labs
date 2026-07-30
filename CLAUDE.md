@@ -9,25 +9,27 @@ growing collection of Streamlit apps built on top of both. See `README.md` for t
 
 ## Architecture
 
-This is a **uv workspace** (`pyproject.toml` at root, `[tool.uv.workspace] members = ["servers/*", "apps/*"]`).
-Every server and app is an independent package with its own `pyproject.toml`. This is deliberate, not
-incidental — three things depend on it:
+This is a **uv workspace** (`pyproject.toml` at root, `[tool.uv.workspace] members = ["servers/*", "apps/*"]`,
+`exclude = ["servers/unsloth"]`). Every server and app is an independent package with its own
+`pyproject.toml`. This is deliberate, not incidental:
 
 1. **Servers run on different machines than apps, and often different machines than each other.**
-   `servers/whisper/` and `servers/unsloth/` are each self-contained: if you copy just one of those
-   folders to another machine (no root `pyproject.toml` present), `uv` treats it as a standalone project
-   with its own lock/venv. Never add a dependency from a server on anything under `apps/` or the other
-   server.
+   `servers/whisper/` is self-contained: copy just that folder to another machine (no root
+   `pyproject.toml` present) and `uv` treats it as a standalone project with its own lock/venv. Never add a
+   dependency from a server on anything under `apps/` or the other server.
 2. **Apps never hardcode a server host.** They read `WHISPER_API_URL` / `UNSLOTH_API_BASE` /
    `UNSLOTH_STUDIO_AUTH_TOKEN` / `UNSLOTH_MODEL` via `ai_lab_common.settings.Settings` (pydantic-settings,
    `.env`-backed), and every app renders `ai_lab_common.sidebar.render_endpoint_sidebar()` so those values
    can be overridden per-session without editing `.env`. When adding a new app, do the same rather than
    constructing a `requests`/`OpenAI` client with a literal URL.
-3. **`servers/unsloth` pulls torch/xformers/triton/unsloth into the *same* workspace lockfile as
-   everything else.** It resolves today (`uv sync --all-packages` from root), but it's the one dependency
-   in this repo big enough to break workspace-wide resolution if it's ever bumped carelessly. If it ever
-   conflicts with other members' deps, the fix is to remove it from `[tool.uv.workspace] members` (make it
-   a fully standalone project, never resolved together with the rest) rather than fighting the resolver.
+3. **`servers/unsloth` is deliberately *not* a uv/Python project at all** — no `pyproject.toml`, excluded
+   from the workspace. Do not add one, and do not add a `unsloth` pip dependency anywhere. Unsloth Studio
+   (the API server) and `pip install unsloth` ("Unsloth Core") are two unrelated products that share a
+   name: Studio is installed by a standalone installer (`irm https://unsloth.ai/install.ps1 | iex` on
+   Windows, `curl -fsSL https://unsloth.ai/install.sh | sh` on macOS/Linux) that manages its own isolated
+   environment and puts a global `unsloth` CLI on PATH; Core is the fine-tuning library and does not
+   provide the `unsloth run`/`unsloth studio` CLI. `servers/unsloth/start.*` call the global `unsloth`
+   binary directly — never `uv run unsloth ...`.
 
 ### `apps/common` (package `ai-lab-common`)
 
@@ -60,22 +62,21 @@ wires up `ai-lab-common`. Run it with `./scripts/run_app.sh <name>` / `./scripts
   Windows-only: `_fix_windows_cuda_dll_path()` patches `PATH`/DLL search dirs for the `nvidia-cublas`/
   `nvidia-cudnn` pip packages, since faster-whisper's CTranslate2 backend needs those DLLs discoverable and
   they don't land on `PATH` the way system CUDA installs do.
-- `servers/unsloth/` — no Python package, just `start.sh`/`start.ps1` wrapping `unsloth run --model
-  $UNSLOTH_MODEL -H $UNSLOTH_HOST -p $UNSLOTH_PORT -y` (installed via the `unsloth` pip dependency in its
-  own `pyproject.toml`; CLI command is `unsloth run`, not `unsloth studio` — that binary only starts a
-  Chat UI, not the API server). `UNSLOTH_MODEL` here is a GGUF repo, optionally `repo:QUANT`
-  (e.g. `unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL`) — different from the `UNSLOTH_MODEL` apps use (the
-  loaded model's *id*, as returned by `GET /v1/models`, sent in chat-completion requests). On first run
-  the API key is auto-generated and printed to the console (not created through a UI step) — copy it into
+- `servers/unsloth/` — no Python package (see point 3 above), just `start.sh`/`start.ps1` that check
+  `unsloth` is on PATH, then run `unsloth run --model $UNSLOTH_MODEL -H $UNSLOTH_HOST -p $UNSLOTH_PORT -y`.
+  `UNSLOTH_MODEL` here is a GGUF repo, optionally `repo:QUANT` (e.g.
+  `unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL`) — different from the `UNSLOTH_MODEL` apps use (the loaded
+  model's *id*, as returned by `GET /v1/models`, sent in chat-completion requests). On first run the API
+  key is auto-generated and printed to the console (not created through a UI step) — copy it into
   `UNSLOTH_STUDIO_AUTH_TOKEN` in both this server's `.env` and the repo-root `.env`. Binding to `0.0.0.0`
   disables Unsloth's server-side tools (web search/code exec) by default and would otherwise prompt
   interactively for confirmation; `-y` in the start scripts skips that prompt non-interactively.
 
-Both server `start.*` scripts follow the same pattern: `cd` to the script's own directory, copy
-`.env.example` -> `.env` if missing, `uv sync`, then run. Running the server module directly (e.g.
-`python -m whisper_server.main`) only works with the server's own directory as cwd — both
-`servers/whisper` and `servers/unsloth` have `[tool.uv] package = false`, so they aren't installed into
-site-packages; they're only importable when their own folder is on `sys.path` (i.e. it is cwd).
+`servers/whisper/start.*` `cd`s to the script's own directory, copies `.env.example` -> `.env` if missing,
+`uv sync`s, then runs. Running the server module directly (e.g. `python -m whisper_server.main`) only
+works with `servers/whisper` as cwd — it has `[tool.uv] package = false`, so it isn't installed into
+site-packages; it's only importable when its own folder is on `sys.path` (i.e. it is cwd).
+`servers/unsloth/start.*` don't touch uv at all (see point 3 above).
 
 ## Commands
 
@@ -86,7 +87,7 @@ uv run --package <name> <cmd>        # run something inside one workspace member
 ./scripts/run_app.sh <app_dir>       # run apps/<app_dir>/app.py via streamlit (Linux/macOS)
 ./scripts/run_app.ps1 <app_dir>      # same, Windows PowerShell
 ./servers/whisper/start.sh|start.ps1 # sync + run the Whisper server (run from that machine)
-./servers/unsloth/start.sh|start.ps1 # sync + run the Unsloth LLM server (run from that machine)
+./servers/unsloth/start.sh|start.ps1 # run the globally-installed `unsloth` CLI (run from that machine)
 ```
 
 There is no test suite, lint config, or CI in this repo yet.
