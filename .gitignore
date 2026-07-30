@@ -16,3 +16,6 @@ apps/*/.env
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Unsloth runtime cache
+servers/unsloth/unsloth_compiled_cache/
