@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "ai-lab-common",
+    "Pillow>=11.0",
 ]
 
 [tool.uv.sources]

@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -23,7 +24,10 @@ logger = logging.getLogger("ocr-server")
 _PDF_CONTENT_TYPES = {"application/pdf"}
 _RESULT_EXTENSIONS = (".mmd", ".md", ".txt")
 
-_DET_RE = re.compile(r"<\|det\|>([^<\s]+)(?:\s*\[[^\]]*\])?\s*<\|/det\|>(.*)", re.DOTALL)
+# Coordinates in `[x0, y0, x1, y1]` are on a 0-1000 scale relative to the page
+# image (not the model's internal resize canvas) - matching the DeepSeek-OCR
+# family's grounding convention this model's <|det|> markers follow.
+_DET_RE = re.compile(r"<\|det\|>([^<\s\[]+)(?:\s*\[([^\]]*)\])?\s*<\|/det\|>(.*)", re.DOTALL)
 
 
 def _handle_sigint(signum, frame):
@@ -31,31 +35,45 @@ def _handle_sigint(signum, frame):
     os._exit(0)
 
 
-def _remove_det(raw: str) -> str:
-    """Strip <|det|>type [bbox]<|/det|> markers from the model's raw output,
-    grouping lines belonging to the same block and separating blocks with a
-    blank line. Mirrors the post-processing recipe from the model card."""
-    blocks: list[list[str]] = []
-    cur: list[str] | None = None
+def _parse_blocks(raw: str) -> list[dict]:
+    """Parse <|det|>type [x0, y0, x1, y1]<|/det|> markers from the model's raw
+    output into structured blocks, grouping lines belonging to the same block.
+    Mirrors the post-processing recipe from the model card, but keeps the
+    category/bbox instead of discarding them. bbox coordinates are on a
+    0-1000 scale relative to the page image the model was given."""
+    blocks: list[dict] = []
+    cur: dict | None = None
     for line in raw.splitlines():
         line = line.rstrip()
         if not line:
             continue
         m = _DET_RE.match(line)
         if m:
-            category, content = m.group(1).strip(), m.group(2).strip()
-            if category == "image":
-                continue
+            category, bbox_raw, content = m.group(1).strip(), m.group(2), m.group(3).strip()
+            bbox = None
+            if bbox_raw:
+                try:
+                    bbox = [int(v.strip()) for v in bbox_raw.split(",")]
+                except ValueError:
+                    bbox = None
             if cur is not None:
                 blocks.append(cur)
-            cur = [content] if content else []
+            cur = {"category": category, "bbox": bbox, "lines": [content] if content else []}
             continue
         if cur is None:
-            cur = []
-        cur.append(line)
+            cur = {"category": None, "bbox": None, "lines": []}
+        cur["lines"].append(line)
     if cur is not None:
         blocks.append(cur)
-    return "\n\n".join("\n".join(b) for b in blocks).strip()
+
+    result = []
+    for b in blocks:
+        result.append({"category": b["category"], "bbox": b["bbox"], "text": "\n".join(b["lines"]).strip()})
+    return result
+
+
+def _blocks_to_text(blocks: list[dict]) -> str:
+    return "\n\n".join(b["text"] for b in blocks if b["category"] != "image" and b["text"]).strip()
 
 
 def _is_pdf(filename: str, content_type: str | None) -> bool:
@@ -76,18 +94,18 @@ def _pdf_to_images(pdf_path: str, out_dir: str, dpi: int) -> list[str]:
     return paths
 
 
-def _extract_result(infer_return, output_dir: str) -> str:
+def _extract_blocks(infer_return, output_dir: str) -> list[dict]:
     """The model's .infer()/.infer_multi() write parsed output to output_dir
     when save_results=True; some trust_remote_code revisions also return the
     text directly. Prefer the direct return value, otherwise read the most
     recently written result file in output_dir."""
     if isinstance(infer_return, str) and infer_return.strip():
-        return _remove_det(infer_return)
+        return _parse_blocks(infer_return)
     if isinstance(infer_return, dict):
         for key in ("text", "result", "content"):
             value = infer_return.get(key)
             if isinstance(value, str) and value.strip():
-                return _remove_det(value)
+                return _parse_blocks(value)
 
     candidates = sorted(
         (p for p in Path(output_dir).glob("*") if p.suffix.lower() in _RESULT_EXTENSIONS),
@@ -96,7 +114,7 @@ def _extract_result(infer_return, output_dir: str) -> str:
     )
     if not candidates:
         raise RuntimeError(f"OCR model produced no readable output in {output_dir}")
-    return _remove_det(candidates[0].read_text(encoding="utf-8"))
+    return _parse_blocks(candidates[0].read_text(encoding="utf-8"))
 
 
 def create_app() -> FastAPI:
@@ -165,12 +183,15 @@ def create_app() -> FastAPI:
                         ngram_window=128,
                         save_results=True,
                     )
-                    page_text = _extract_result(infer_return, page_output_dir)
+                    blocks = _extract_blocks(infer_return, page_output_dir)
+                    page_text = _blocks_to_text(blocks)
                     page_texts.append(page_text)
+                    image_b64 = base64.b64encode(Path(page_path).read_bytes()).decode("ascii")
 
-                    logger.info(f"Page {i}/{total} parsed ({len(page_text)} chars)")
+                    logger.info(f"Page {i}/{total} parsed ({len(page_text)} chars, {len(blocks)} block(s))")
                     yield json.dumps({
                         "type": "page", "index": i, "total": total, "text": page_text,
+                        "blocks": blocks, "image_b64": image_b64,
                     }) + "\n"
 
                 full_text = "\n\n".join(page_texts).strip()
