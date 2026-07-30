@@ -30,7 +30,10 @@ def _fix_windows_cuda_dll_path() -> None:
     if sys.platform != "win32":
         return
     for pkg_name in ("nvidia.cublas", "nvidia.cudnn"):
-        spec = importlib.util.find_spec(pkg_name)
+        try:
+            spec = importlib.util.find_spec(pkg_name)
+        except ModuleNotFoundError:
+            spec = None
         if not spec or not spec.submodule_search_locations:
             logger.warning(f"Could not locate package: {pkg_name}")
             continue
