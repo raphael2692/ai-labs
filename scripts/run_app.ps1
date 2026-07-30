@@ -1,10 +1,15 @@
 # Runs one of the apps/ Streamlit apps from the repo root.
 # Usage: ./scripts/run_app.ps1 meeting_minutes
 param(
-    [Parameter(Mandatory = $true)][string]$AppDir
+    [string]$AppDir
 )
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
+
+if ([string]::IsNullOrWhiteSpace($AppDir)) {
+    Write-Host "Usage: ./scripts/run_app.ps1 <app_dir>"
+    exit 1
+}
 
 $appPath = "apps/$AppDir/app.py"
 if (-not (Test-Path $appPath)) {

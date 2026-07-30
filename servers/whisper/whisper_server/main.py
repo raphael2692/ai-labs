@@ -1,9 +1,9 @@
-import importlib.util
 import json
 import logging
 import os
 import signal
 import sys
+import sysconfig
 import tempfile
 import time
 
@@ -29,23 +29,15 @@ def _fix_windows_cuda_dll_path() -> None:
     so we have to locate and register their `bin` folders manually."""
     if sys.platform != "win32":
         return
-    for pkg_name in ("nvidia.cublas", "nvidia.cudnn"):
-        try:
-            spec = importlib.util.find_spec(pkg_name)
-        except ModuleNotFoundError:
-            spec = None
-        if not spec or not spec.submodule_search_locations:
-            logger.warning(f"Could not locate package: {pkg_name}")
-            continue
-        for loc in spec.submodule_search_locations:
-            bin_dir = os.path.join(loc, "bin")
-            if os.path.isdir(bin_dir):
-                os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
-                os.add_dll_directory(bin_dir)
-                logger.info(f"Added to PATH: {bin_dir}")
-                break
+    site_packages = sysconfig.get_path("purelib")
+    for pkg_name in ("cublas", "cudnn"):
+        bin_dir = os.path.join(site_packages, "nvidia", pkg_name, "bin")
+        if os.path.isdir(bin_dir):
+            os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
+            os.add_dll_directory(bin_dir)
+            logger.info(f"Added to PATH: {bin_dir}")
         else:
-            logger.warning(f"Found {pkg_name} but no 'bin' folder in {spec.submodule_search_locations}")
+            logger.warning(f"Could not locate package: nvidia-{pkg_name} (looked in {bin_dir})")
 
 
 def create_app() -> FastAPI:
