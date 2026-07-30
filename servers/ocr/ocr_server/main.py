@@ -1,10 +1,13 @@
+import importlib
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import signal
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -56,6 +59,54 @@ def _remove_det(raw: str) -> str:
     if cur is not None:
         blocks.append(cur)
     return "\n\n".join("\n".join(b) for b in blocks).strip()
+
+
+def _streaming_infer(model, tokenizer, streamer_module, **infer_kwargs):
+    """Runs model.infer() in a background thread, temporarily swapping the model
+    module's TPSTextStreamer for a subclass that also pushes each finalized text
+    chunk onto a queue. infer() looks up `TPSTextStreamer` by name in its own
+    module's globals every call, so patching that name is enough to intercept it
+    without touching the vendored inference code. Without this, infer() blocks
+    until the whole page is generated before returning anything.
+
+    Yields text chunks as they're generated; once exhausted, the generator's
+    StopIteration.value holds infer()'s actual return value (its raw text, or
+    None if it wrote results to output_path instead).
+    """
+    chunk_queue: queue.Queue = queue.Queue()
+    original_streamer_cls = streamer_module.TPSTextStreamer
+
+    class _QueueStreamer(original_streamer_cls):
+        def on_finalized_text(self, text, stream_end=False):
+            super().on_finalized_text(text, stream_end)
+            if text:
+                chunk_queue.put(text)
+
+    result: dict = {}
+
+    def _run():
+        streamer_module.TPSTextStreamer = _QueueStreamer
+        try:
+            result["value"] = model.infer(tokenizer, **infer_kwargs)
+        except Exception as e:
+            result["error"] = e
+        finally:
+            streamer_module.TPSTextStreamer = original_streamer_cls
+            chunk_queue.put(None)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    while True:
+        chunk = chunk_queue.get()
+        if chunk is None:
+            break
+        yield chunk
+
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
 
 
 def _is_pdf(filename: str, content_type: str | None) -> bool:
@@ -131,6 +182,10 @@ def create_app() -> FastAPI:
     if model.generation_config.pad_token_id is None:
         model.generation_config.pad_token_id = tokenizer.pad_token_id
 
+    # infer() reads its TPSTextStreamer class from this module's own globals, so this
+    # is the module _streaming_infer() patches to intercept token-level streaming.
+    streamer_module = importlib.import_module(model.__class__.__module__)
+
     logger.info("OCR model loaded successfully!")
 
     @app.get("/health")
@@ -165,8 +220,10 @@ def create_app() -> FastAPI:
                     page_output_dir = os.path.join(work_dir, f"out_{i:04d}")
                     os.makedirs(page_output_dir, exist_ok=True)
 
-                    infer_return = model.infer(
+                    infer_gen = _streaming_infer(
+                        model,
                         tokenizer,
+                        streamer_module,
                         prompt="<image>document parsing.",
                         image_file=page_path,
                         output_path=page_output_dir,
@@ -178,6 +235,16 @@ def create_app() -> FastAPI:
                         ngram_window=128,
                         save_results=True,
                     )
+                    infer_return = None
+                    try:
+                        while True:
+                            chunk = next(infer_gen)
+                            yield json.dumps({
+                                "type": "chunk", "index": i, "total": total, "text": chunk,
+                            }) + "\n"
+                    except StopIteration as stop:
+                        infer_return = stop.value
+
                     raw_text = _extract_raw(infer_return, page_output_dir)
                     page_text = _remove_det(raw_text)
                     page_texts.append(page_text)

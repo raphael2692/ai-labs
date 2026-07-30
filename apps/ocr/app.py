@@ -22,14 +22,11 @@ if uploaded_file is not None:
         status_placeholder = st.empty()
 
         st.markdown("### 📋 Extracted Text")
-        tab_markdown, tab_raw = st.tabs(["Markdown", "Raw Output"])
-        markdown_placeholder = tab_markdown.empty()
-        raw_placeholder = tab_raw.empty()
+        raw_placeholder = st.empty()
 
-        full_text = ""
         full_raw = ""
-        text_chunks = []
         raw_chunks = []
+        current_page_chunks = []
 
         try:
             status_placeholder.info("Sending file to OCR server...")
@@ -38,16 +35,18 @@ if uploaded_file is not None:
             ):
                 if event["type"] == "info":
                     status_placeholder.info(f"Parsing {event['pages']} page(s)...")
+                elif event["type"] == "chunk":
+                    status_placeholder.info(f"Parsing page {event['index']}/{event['total']}...")
+                    current_page_chunks.append(event["text"])
+                    preview = raw_chunks + ["".join(current_page_chunks)]
+                    raw_placeholder.text("\n\n".join(preview))
                 elif event["type"] == "page":
                     status_placeholder.info(f"Parsed page {event['index']}/{event['total']}...")
-                    text_chunks.append(event["text"])
+                    current_page_chunks = []
                     raw_chunks.append(event["raw_text"].strip())
-                    markdown_placeholder.markdown("\n\n".join(text_chunks))
                     raw_placeholder.text("\n\n".join(raw_chunks))
                 elif event["type"] == "done":
-                    full_text = event["text"]
                     full_raw = event["raw_text"]
-                    markdown_placeholder.markdown(full_text)
                     raw_placeholder.text(full_raw)
                     status_placeholder.success(
                         f"OCR complete! ({event['pages']} page(s) in {event['elapsed']:.1f}s)"
@@ -60,8 +59,8 @@ if uploaded_file is not None:
             st.stop()
 
         st.download_button(
-            label="Download Markdown (.md)",
-            data=full_text,
-            file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}.md",
-            mime="text/markdown",
+            label="Download Raw Output (.txt)",
+            data=full_raw,
+            file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}.txt",
+            mime="text/plain",
         )
