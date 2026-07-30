@@ -1,0 +1,15 @@
+[project]
+name = "chat"
+version = "0.1.0"
+description = "Streamlit chat UI for the Unsloth server."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ai-lab-common",
+]
+
+[tool.uv.sources]
+ai-lab-common = { workspace = true }
+
+[tool.uv]
+package = false

@@ -1,0 +1,13 @@
+[project]
+name = "ai-lab"
+version = "0.1.0"
+description = "Personal AI lab workspace: Unsloth LLM server, Whisper ASR server, and Streamlit apps."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["servers/*", "apps/*"]

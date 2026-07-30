@@ -1,0 +1,15 @@
+[project]
+name = "app-template"
+version = "0.1.0"
+description = "Copy this folder to start a new Streamlit app wired to the shared server endpoints."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ai-lab-common",
+]
+
+[tool.uv.sources]
+ai-lab-common = { workspace = true }
+
+[tool.uv]
+package = false
