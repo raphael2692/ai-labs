@@ -37,6 +37,7 @@ st.set_page_config(page_title="Pipeline", page_icon="🧵", layout="wide")
 st.session_state.setdefault("stage", "idle")  # idle -> extracting -> extracted
 #   -> [revising -> revised ->] formatting -> done   (revising/revised skipped if revision disabled)
 st.session_state.setdefault("error", None)
+st.session_state.setdefault("error_kind", None)  # "error" | "info" (info: e.g. stopped early, not a failure)
 st.session_state.setdefault("extract_pages", [])  # [{"index", "text", "blocks"}] for pdf/image
 st.session_state.setdefault("extract_live_raw", "")
 st.session_state.setdefault("extract_total_pages", None)
@@ -45,8 +46,13 @@ st.session_state.setdefault("final_text", "")
 st.session_state.setdefault("final_structure", None)  # list of page dicts, or None for audio
 st.session_state.setdefault("revision_enabled", True)
 st.session_state.setdefault("revised_text", "")
+st.session_state.setdefault("revised_pages", [])  # per-page revised text, parallel to extract_pages
 st.session_state.setdefault("current_step", None)  # "revision" | "format"
 st.session_state.setdefault("md_text", "")
+st.session_state.setdefault("gen_pages", [])  # [(text, structure_or_None), ...] for the in-progress step
+st.session_state.setdefault("gen_page_index", 0)
+st.session_state.setdefault("gen_page_outputs", [])  # finished per-page outputs for the in-progress step
+st.session_state.setdefault("gen_current_page_text", "")  # accumulates deltas for the page in flight
 st.session_state.setdefault("file_kind", None)  # "audio" | "document"
 st.session_state.setdefault("file_stem", "pipeline")
 st.session_state.setdefault("prompts", load_prompts())
@@ -115,8 +121,16 @@ def _generate_worker(client, model, system_prompt, user_content, q, cancel_event
         q.put({"type": "error", "message": f"Generation failed: {e}"})
 
 
-def _build_user_content(text: str, structure: list | None) -> str:
-    content = f"Text to process:\n\n{text}"
+def _build_user_content(text: str, structure: list | None, page_info: tuple[int, int] | None = None) -> str:
+    content = ""
+    if page_info and page_info[1] > 1:
+        content += (
+            f"[This is page {page_info[0]} of {page_info[1]} of a larger document, sent separately so each "
+            "call stays within context. Its output will be concatenated with the other pages' outputs "
+            "afterward — do not add a wrap-up/conclusion, and do not repeat a full document title/preamble "
+            "unless this is page 1.]\n\n"
+        )
+    content += f"Text to process:\n\n{text}"
     if structure:
         content += (
             "\n\n---\nStructured extraction (JSON, per page/label):\n"
@@ -125,37 +139,134 @@ def _build_user_content(text: str, structure: list | None) -> str:
     return content
 
 
-def _start_generation(step: str, system_prompt: str, user_content: str) -> None:
+def _revision_page_sources() -> list[tuple[str, list | None]]:
+    """One (text, structure) entry per extracted page — for document input
+    with page-level structure available — or a single entry for audio (which
+    has no page concept)."""
+    if st.session_state.file_kind == "document" and st.session_state.extract_pages:
+        return [(p["text"], [{"page": p["index"], "blocks": p["blocks"]}]) for p in st.session_state.extract_pages]
+    return [(st.session_state.final_text, None)]
+
+
+def _format_page_sources() -> list[tuple[str, list | None]]:
+    """Mirrors _revision_page_sources but draws from the revision step's
+    per-page output when revision ran, so formatting still sees one page's
+    worth of text per call instead of the whole document at once."""
+    if not st.session_state.revision_enabled:
+        return _revision_page_sources()
+    if st.session_state.file_kind == "document" and st.session_state.revised_pages:
+        extract_pages = st.session_state.extract_pages
+        return [
+            (text, [{"page": extract_pages[i]["index"], "blocks": extract_pages[i]["blocks"]}])
+            for i, text in enumerate(st.session_state.revised_pages)
+        ]
+    return [(st.session_state.revised_text, None)]
+
+
+def _start_generation(step: str, system_prompt: str, page_sources: list[tuple[str, list | None]]) -> None:
+    st.session_state.gen_pages = page_sources
+    st.session_state.gen_page_index = 0
+    st.session_state.gen_page_outputs = []
+    st.session_state.gen_current_page_text = ""
+    st.session_state.gen_system_prompt = system_prompt
+    st.session_state.current_step = step
+    st.session_state.error = None
+    if step == "revision":
+        st.session_state.revised_text = ""
+        st.session_state.revised_pages = []
+        st.session_state.stage = "revising"
+    else:
+        st.session_state.md_text = ""
+        st.session_state.stage = "formatting"
+    _start_page_worker()
+    st.rerun()
+
+
+def _start_page_worker() -> None:
+    """Spawns the worker for st.session_state.gen_page_index — one LLM call
+    per page, so a multi-page document never has to fit in a single request's
+    context window."""
+    idx = st.session_state.gen_page_index
+    total = len(st.session_state.gen_pages)
+    text, structure = st.session_state.gen_pages[idx]
+    user_content = _build_user_content(text, structure, page_info=(idx + 1, total))
     cancel_event = threading.Event()
     q = queue.Queue()
     client = get_llm_client(settings)
     thread = threading.Thread(
         target=_generate_worker,
-        args=(client, settings.unsloth_model, system_prompt, user_content, q, cancel_event),
+        args=(client, settings.unsloth_model, st.session_state.gen_system_prompt, user_content, q, cancel_event),
         daemon=True,
     )
     thread.start()
     st.session_state.generate_queue = q
     st.session_state.generate_cancel = cancel_event
-    st.session_state.current_step = step
-    st.session_state.error = None
+
+
+def _finish_generation_page(step: str, cancelled: bool = False) -> None:
+    """Called when one page's generation call completes. Advances to the
+    next page's call if any remain (staying in the same stage), otherwise
+    closes out the step — merging per-page outputs is just letting them
+    accumulate in order in revised_text/md_text as each page finishes."""
+    st.session_state.gen_page_outputs.append(st.session_state.gen_current_page_text)
+    st.session_state.gen_current_page_text = ""
+    has_more = st.session_state.gen_page_index + 1 < len(st.session_state.gen_pages)
+    if not cancelled and has_more:
+        st.session_state.gen_page_index += 1
+        buffer_key = "revised_text" if step == "revision" else "md_text"
+        st.session_state[buffer_key] += "\n\n"
+        _start_page_worker()
+        return
     if step == "revision":
-        st.session_state.revised_text = ""
-        st.session_state.stage = "revising"
+        st.session_state.revised_pages = list(st.session_state.gen_page_outputs)
+        st.session_state.stage = "revised"
     else:
-        st.session_state.md_text = ""
-        st.session_state.stage = "formatting"
-    st.rerun()
+        st.session_state.stage = "done"
+    if cancelled:
+        what = "Content revision" if step == "revision" else "Formatting"
+        st.session_state.error = f"{what} stopped early — showing partial result."
+        st.session_state.error_kind = "info"
 
 
 def _reset_pipeline():
-    for key in ("extract_pages", "extract_live_raw", "extract_meta", "final_text", "revised_text", "md_text"):
+    for key in (
+        "extract_pages",
+        "extract_live_raw",
+        "extract_meta",
+        "final_text",
+        "revised_text",
+        "revised_pages",
+        "md_text",
+        "gen_pages",
+        "gen_page_outputs",
+        "gen_current_page_text",
+    ):
         st.session_state[key] = "" if isinstance(st.session_state[key], str) else []
     st.session_state.extract_total_pages = None
     st.session_state.final_structure = None
     st.session_state.current_step = None
+    st.session_state.gen_page_index = 0
     st.session_state.error = None
+    st.session_state.error_kind = None
     st.session_state.stage = "idle"
+
+
+_STEPPER_GROUPS_BASE = [("Upload", ("idle",)), ("Extract", ("extracting", "extracted"))]
+_STEPPER_GROUP_REVISE = ("Revise", ("revising", "revised"))
+_STEPPER_GROUPS_TAIL = [("Format", ("formatting",)), ("Done", ("done",))]
+
+
+def _render_stepper() -> None:
+    """One-line breadcrumb of the overall pipeline (not just the current
+    stage's sub-state), so the user always knows how many steps remain —
+    the Revise group only appears when that step is actually enabled."""
+    groups = _STEPPER_GROUPS_BASE + ([_STEPPER_GROUP_REVISE] if st.session_state.revision_enabled else []) + _STEPPER_GROUPS_TAIL
+    stage = st.session_state.stage
+    current = next((i for i, (_, stages) in enumerate(groups) if stage in stages), 0)
+    parts = [
+        (f"✓ {label}" if i < current else f"**{label}**" if i == current else label) for i, (label, _) in enumerate(groups)
+    ]
+    st.caption(" → ".join(parts))
 
 
 _FRONT_MATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
@@ -223,26 +334,34 @@ def _prompt_editor(title: str, select_key: str, enabled: bool = True) -> str:
 
 with st.sidebar:
     st.title("🧵 Pipeline")
+    st.caption("Extract, revise, and format documents or audio into Markdown.")
     settings = render_endpoint_sidebar(get_settings())
     image_mode = st.selectbox(
-        "OCR image_mode",
+        "Image detail (PDF/image only)",
         ["gundam", "base"],
-        help="Only used for PDF/image input. gundam: cropped detail tiles, best for a single detail-heavy "
-        "page. base: one uncropped pass, faster for multi-page/PDF.",
+        format_func=lambda v: {"gundam": "Detailed — cropped tiles", "base": "Fast — single pass"}[v],
+        help="Detailed (gundam): cropped detail tiles, best for a single detail-heavy page. Fast (base): one "
+        "uncropped pass, faster for multi-page/PDF. Has no effect on audio input.",
     )
-    if st.session_state.stage != "idle" and st.button("↺ Start over"):
+    if st.session_state.stage != "idle" and st.button(
+        "↺ Start over", help="Discards the current run and returns to upload."
+    ):
         _reset_pipeline()
         st.rerun()
 
-st.title("Extract → Revise → Format")
+st.title("Extract → Revise → Format" if st.session_state.revision_enabled else "Extract → Format")
+_render_stepper()
 
 # --- 1. Prompt setup — configured up front, independent of pipeline stage ---
 
-st.subheader("1. Prompts")
+st.subheader("1. Configure prompts")
+st.caption("Set these up before you upload a file — they apply for the whole run and can't be changed mid-pipeline.")
 
 st.checkbox(
-    "Enable content revision step (optional pass before formatting)",
+    "Revise before formatting",
     key="revision_enabled",
+    help="Runs a light copy-edit pass over the extracted text — fixing OCR/transcription artifacts and "
+    "tightening phrasing — before the formatting step. Turn off to format directly from the raw extraction.",
 )
 revision_prompt_text = _prompt_editor(
     "Content revision", "selected_prompt_revision", enabled=st.session_state.revision_enabled
@@ -254,16 +373,22 @@ formatting_prompt_text = _prompt_editor("Formatting", "selected_prompt_format")
 
 st.divider()
 st.subheader("2. Upload & extract")
+st.caption(
+    "Audio is transcribed via Whisper; PDF/image is parsed via OCR. Extraction streams live below and can "
+    "be stopped early without losing what's already come through."
+)
 
 uploaded_file = st.file_uploader(
     "Choose an audio file, PDF, or image",
     type=["wav", "mp3", "m4a", "ogg", "flac", "webm", "pdf", "png", "jpg", "jpeg"],
     disabled=st.session_state.stage != "idle",
+    help="Start over to upload a different file." if st.session_state.stage != "idle" else None,
 )
 start = st.button(
     "🚀 Extract",
     type="primary",
     disabled=uploaded_file is None or st.session_state.stage != "idle",
+    help="Uses the endpoints configured in the sidebar." if uploaded_file is not None else "Choose a file first.",
 )
 
 if start and uploaded_file is not None:
@@ -309,6 +434,7 @@ def _poll_extraction():
             st.rerun()
         elif item["type"] == "error":
             st.session_state.error = item["message"]
+            st.session_state.error_kind = "error"
             st.session_state.stage = "idle"
             st.rerun()
 
@@ -364,13 +490,14 @@ def _finish_extraction(cancelled: bool = False):
     st.session_state.stage = "extracted"
     if cancelled:
         st.session_state.error = "Extraction stopped early — showing partial results."
+        st.session_state.error_kind = "info"
 
 
 if st.session_state.stage == "extracting":
     _poll_extraction()
 
 if st.session_state.error:
-    st.warning(st.session_state.error)
+    (st.info if st.session_state.error_kind == "info" else st.error)(st.session_state.error)
 
 # --- 3. Extracted text --------------------------------------------------------
 
@@ -379,30 +506,46 @@ _POST_EXTRACT_STAGES = ("extracted", "revising", "revised", "formatting", "done"
 if st.session_state.stage in _POST_EXTRACT_STAGES:
     st.divider()
     st.subheader("3. Extracted text")
-    st.text_area("Extracted text", st.session_state.final_text, height=220, disabled=True)
-    if st.session_state.final_structure:
-        with st.expander(f"Structured extraction ({len(st.session_state.final_structure)} page(s), JSON)"):
-            st.json(st.session_state.final_structure)
+    if st.session_state.stage == "extracted":
+        # Current decision point — show it in full rather than collapsed.
+        st.text_area("Extracted text", st.session_state.final_text, height=220, disabled=True)
+        if st.session_state.final_structure:
+            with st.expander(f"Structured extraction ({len(st.session_state.final_structure)} page(s), JSON)"):
+                st.json(st.session_state.final_structure)
+    else:
+        # The pipeline has moved on — collapse to keep the page scannable.
+        with st.expander(f"View extracted text ({len(st.session_state.final_text):,} characters)"):
+            st.text_area(
+                "Extracted text",
+                st.session_state.final_text,
+                height=220,
+                disabled=True,
+                label_visibility="collapsed",
+            )
+            if st.session_state.final_structure:
+                st.caption(f"Structured extraction — {len(st.session_state.final_structure)} page(s), JSON")
+                st.json(st.session_state.final_structure)
 
     if st.session_state.stage == "extracted":
-        user_content = _build_user_content(st.session_state.final_text, st.session_state.final_structure)
         if st.session_state.error:
             # A generation error bounced the stage back to "extracted" — don't
             # auto-retry into the same failure, wait for an explicit retry.
-            if st.button("🔁 Retry"):
+            retry_label = "🔁 Retry revision" if st.session_state.revision_enabled else "🔁 Retry formatting"
+            if st.button(retry_label):
                 if st.session_state.revision_enabled:
-                    _start_generation("revision", revision_prompt_text, user_content)
+                    _start_generation("revision", revision_prompt_text, _revision_page_sources())
                 else:
-                    _start_generation("format", formatting_prompt_text, user_content)
+                    _start_generation("format", formatting_prompt_text, _revision_page_sources())
         elif st.session_state.revision_enabled:
-            _start_generation("revision", revision_prompt_text, user_content)
+            _start_generation("revision", revision_prompt_text, _revision_page_sources())
         else:
-            _start_generation("format", formatting_prompt_text, user_content)
+            _start_generation("format", formatting_prompt_text, _revision_page_sources())
 
 
 @st.fragment(run_every=POLL_INTERVAL)
 def _poll_generation():
     step = st.session_state.current_step
+    step_label = "revision" if step == "revision" else "formatting"
     buffer_key = "revised_text" if step == "revision" else "md_text"
     q = st.session_state.generate_queue
     drained = False
@@ -411,56 +554,63 @@ def _poll_generation():
         drained = True
         if item["type"] == "delta":
             st.session_state[buffer_key] += item["text"]
+            st.session_state.gen_current_page_text += item["text"]
         elif item["type"] == "finished":
-            st.session_state.stage = "revised" if step == "revision" else "done"
+            _finish_generation_page(step)
             st.rerun()
         elif item["type"] == "cancelled":
-            st.session_state.stage = "revised" if step == "revision" else "done"
-            what = "Content revision" if step == "revision" else "Formatting"
-            st.session_state.error = f"{what} stopped early — showing partial result."
+            _finish_generation_page(step, cancelled=True)
             st.rerun()
         elif item["type"] == "error":
             st.session_state.error = item["message"]
+            st.session_state.error_kind = "error"
             st.session_state.stage = "extracted" if step == "revision" or not st.session_state.revision_enabled else "revised"
             st.rerun()
 
-    st.info("Revising content..." if step == "revision" else "Formatting...")
+    total = len(st.session_state.gen_pages)
+    page_note = f" (page {st.session_state.gen_page_index + 1}/{total})" if total > 1 else ""
+    st.info(("Revising content..." if step == "revision" else "Formatting...") + page_note)
     if step == "revision":
         st.text_area("Live revision", st.session_state.revised_text, height=240, disabled=True)
     else:
         _render_markdown_preview(st.session_state.md_text)
-    st.button("⏹ Stop", on_click=lambda: st.session_state.generate_cancel.set(), key=f"stop_{step}")
+    st.button(f"⏹ Stop {step_label}", on_click=lambda: st.session_state.generate_cancel.set(), key=f"stop_{step}")
     if not drained:
         return
 
 
-# --- 5. Content revision (optional) ------------------------------------------
+# --- 4. Content revision (optional) ------------------------------------------
 
 if st.session_state.revision_enabled and st.session_state.stage in ("revising", "revised", "formatting", "done"):
     st.divider()
-    st.subheader("5. Content revision")
+    st.subheader("4. Content revision")
     if st.session_state.stage == "revising":
         _poll_generation()
+    elif st.session_state.stage == "revised":
+        # Current decision point — show it in full rather than collapsed.
+        st.text_area("Revised content", key="revised_text", height=240, disabled=True)
+        if st.session_state.error:
+            if st.button("🔁 Retry formatting"):
+                _start_generation("format", formatting_prompt_text, _format_page_sources())
+        else:
+            _start_generation("format", formatting_prompt_text, _format_page_sources())
     else:
-        st.text_area(
-            "Revised content",
-            key="revised_text",
-            height=240,
-            disabled=True,
-        )
-        if st.session_state.stage == "revised":
-            user_content = _build_user_content(st.session_state.revised_text, None)
-            if st.session_state.error:
-                if st.button("🔁 Retry formatting"):
-                    _start_generation("format", formatting_prompt_text, user_content)
-            else:
-                _start_generation("format", formatting_prompt_text, user_content)
+        # The pipeline has moved on — collapse to keep the page scannable.
+        with st.expander(f"View revised content ({len(st.session_state.revised_text):,} characters)"):
+            st.text_area(
+                "Revised content",
+                value=st.session_state.revised_text,
+                height=240,
+                disabled=True,
+                label_visibility="collapsed",
+                key="revised_text_view",
+            )
 
-# --- 6. Result -----------------------------------------------------------------
+# --- 5. Result -----------------------------------------------------------------
 
 if st.session_state.stage in ("formatting", "done"):
     st.divider()
-    st.subheader("6. Result")
+    st.subheader("5. Result")
     if st.session_state.stage == "formatting":
         _poll_generation()
     else:
