@@ -1,7 +1,7 @@
 [project]
-name = "meeting-minutes"
+name = "transcribe"
 version = "0.1.0"
-description = "Streamlit app: transcribe a meeting recording via the Whisper server, then summarize it via the Unsloth server."
+description = "Streamlit app: transcribe a recording via the Whisper server."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

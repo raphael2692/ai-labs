@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs one of the apps/ Streamlit apps from the repo root.
-# Usage: ./scripts/run_app.sh meeting_minutes
+# Usage: ./scripts/run_app.sh transcribe
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

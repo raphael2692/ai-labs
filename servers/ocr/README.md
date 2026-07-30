@@ -40,14 +40,10 @@ Edit `.env` (see `.env.example`):
 - `GET /health` — readiness probe.
 - `POST /v1/ocr/parse` — multipart form upload (`file`, a PDF or image), returns `application/x-ndjson`
   with `{"type": "info" | "page" | "done" | "error", ...}` lines. PDFs are rasterized page-by-page (via
-  PyMuPDF) and each page is OCR'd independently, so pages stream in as they finish; the final `done` event
-  carries the concatenated full document as markdown (the model is prompted with the model card's documented
-  `document parsing.` prompt, which emits `<|det|>`-tagged grounding output by default; those markers are
-  stripped from the returned text). Each `page` event additionally carries `blocks` (a list of
-  `{"category": "text"|"title"|"image"|..., "bbox": [x0, y0, x1, y1] | null, "text": str}`, parsed from the
-  raw `<|det|>` grounding markers — `bbox` coordinates are on a 0-1000 scale relative to that page's image,
-  following the DeepSeek-OCR-family grounding convention) and `image_b64` (that page's rasterized image,
-  base64-encoded PNG) so a caller can render the source page next to the extracted blocks with their
-  bounding boxes.
+  PyMuPDF) and each page is OCR'd independently, so pages stream in as they finish. The model is prompted
+  with the model card's documented `document parsing.` prompt, which emits `<|det|>`-tagged grounding output
+  by default. Each `page`/`done` event carries both `text` (grounding markers stripped, ready to render as
+  markdown) and `raw_text` (the model's unprocessed output, markers included); `done`'s versions are the
+  full-document concatenation of all pages.
 
 Point any app (e.g. the `apps/ocr` Streamlit app) at `http://<this-machine-ip>:<OCR_PORT>/v1/ocr/parse`.

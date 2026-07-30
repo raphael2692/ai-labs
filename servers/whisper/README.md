@@ -33,5 +33,5 @@ Edit `.env` (see `.env.example`):
 - `POST /v1/audio/transcriptions` — multipart form upload (`file`), returns `application/x-ndjson` with
   `{"type": "info" | "segment" | "done" | "error", ...}` lines.
 
-Point any app (e.g. the `apps/meeting_minutes` Streamlit app) at
+Point any app (e.g. the `apps/transcribe` Streamlit app) at
 `http://<this-machine-ip>:<WHISPER_PORT>/v1/audio/transcriptions`.

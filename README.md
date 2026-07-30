@@ -11,7 +11,7 @@ servers/
   whisper/     # GPU-backed speech-to-text HTTP API (faster-whisper)
 apps/
   common/      # shared config + HTTP clients used by every app
-  meeting_minutes/  # transcribe a recording -> summarize into meeting minutes
+  transcribe/  # transcribe a recording via the Whisper server
   chat/        # minimal chat UI against the Unsloth server
   _template/   # copy this to start a new app
 scripts/
@@ -46,8 +46,8 @@ Copy `.env.example` to `.env` at the repo root and fill in your servers' address
 then:
 
 ```
-./scripts/run_app.sh meeting_minutes     # Linux/macOS
-./scripts/run_app.ps1 meeting_minutes    # Windows
+./scripts/run_app.sh transcribe     # Linux/macOS
+./scripts/run_app.ps1 transcribe    # Windows
 ```
 
 To add a new app, copy `apps/_template` — see [apps/_template/README.md](apps/_template/README.md).

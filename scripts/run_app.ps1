@@ -1,5 +1,5 @@
 # Runs one of the apps/ Streamlit apps from the repo root.
-# Usage: ./scripts/run_app.ps1 meeting_minutes
+# Usage: ./scripts/run_app.ps1 transcribe
 param(
     [string]$AppDir
 )
