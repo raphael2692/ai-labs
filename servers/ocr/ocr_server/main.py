@@ -183,7 +183,7 @@ def create_app() -> FastAPI:
 
                     infer_return = model.infer(
                         tokenizer,
-                        prompt="<image>\n<|grounding|>Convert the document to markdown.",
+                        prompt="<image>document parsing.",
                         image_file=page_path,
                         output_path=page_output_dir,
                         base_size=config.BASE_SIZE,

@@ -41,9 +41,9 @@ Edit `.env` (see `.env.example`):
 - `POST /v1/ocr/parse` — multipart form upload (`file`, a PDF or image), returns `application/x-ndjson`
   with `{"type": "info" | "page" | "done" | "error", ...}` lines. PDFs are rasterized page-by-page (via
   PyMuPDF) and each page is OCR'd independently, so pages stream in as they finish; the final `done` event
-  carries the concatenated full document as markdown (the model is prompted with
-  `<|grounding|>Convert the document to markdown.`, and `<|det|>`/bbox grounding markers are stripped from
-  the returned text). Each `page` event additionally carries `blocks` (a list of
+  carries the concatenated full document as markdown (the model is prompted with the model card's documented
+  `document parsing.` prompt, which emits `<|det|>`-tagged grounding output by default; those markers are
+  stripped from the returned text). Each `page` event additionally carries `blocks` (a list of
   `{"category": "text"|"title"|"image"|..., "bbox": [x0, y0, x1, y1] | null, "text": str}`, parsed from the
   raw `<|det|>` grounding markers — `bbox` coordinates are on a 0-1000 scale relative to that page's image,
   following the DeepSeek-OCR-family grounding convention) and `image_b64` (that page's rasterized image,
