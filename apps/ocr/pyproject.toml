@@ -1,0 +1,15 @@
+[project]
+name = "ocr-app"
+version = "0.1.0"
+description = "Streamlit app: upload a PDF or image and get the OCR'd text back from the OCR server."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ai-lab-common",
+]
+
+[tool.uv.sources]
+ai-lab-common = { workspace = true }
+
+[tool.uv]
+package = false
