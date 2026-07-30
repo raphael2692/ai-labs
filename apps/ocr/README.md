@@ -1,6 +1,6 @@
 # OCR
 
-Upload a PDF (or image) and get it parsed to text by the OCR server, page by page with live progress.
+Upload a PDF (or image) and get it parsed to markdown by the OCR server, page by page with live progress.
 
 ## Run
 

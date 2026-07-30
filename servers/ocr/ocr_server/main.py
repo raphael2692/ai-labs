@@ -111,6 +111,14 @@ def create_app() -> FastAPI:
         torch_dtype=getattr(torch, config.DTYPE),
     )
     model = model.eval().to(config.DEVICE)
+
+    # The vendored `.infer()` calls self.generate(..., eos_token_id=tokenizer.eos_token_id, ...)
+    # without ever passing pad_token_id or attention_mask, so generate() falls back to treating
+    # eos as pad — even though the tokenizer defines a real, distinct pad token. Sync it onto the
+    # model's generation config so the attention mask is built correctly instead of guessed.
+    if model.generation_config.pad_token_id is None:
+        model.generation_config.pad_token_id = tokenizer.pad_token_id
+
     logger.info("OCR model loaded successfully!")
 
     @app.get("/health")
@@ -146,7 +154,7 @@ def create_app() -> FastAPI:
 
                     infer_return = model.infer(
                         tokenizer,
-                        prompt="<image>document parsing.",
+                        prompt="<image>\n<|grounding|>Convert the document to markdown.",
                         image_file=page_path,
                         output_path=page_output_dir,
                         base_size=config.BASE_SIZE,

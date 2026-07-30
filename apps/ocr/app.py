@@ -35,7 +35,7 @@ if uploaded_file is not None:
                 elif event["type"] == "page":
                     status_placeholder.info(f"Parsed page {event['index']}/{event['total']}...")
                     with pages_placeholder.expander(f"Page {event['index']}/{event['total']}", expanded=False):
-                        st.text(event["text"])
+                        st.markdown(event["text"])
                 elif event["type"] == "done":
                     full_text = event["text"]
                     status_placeholder.success(
@@ -49,11 +49,15 @@ if uploaded_file is not None:
             st.stop()
 
         st.markdown("### 📋 Extracted Text")
-        st.text_area("Full text", full_text, height=400)
+        tab_rendered, tab_raw = st.tabs(["Rendered", "Raw Markdown"])
+        with tab_rendered:
+            st.markdown(full_text)
+        with tab_raw:
+            st.text_area("Raw markdown", full_text, height=400, label_visibility="collapsed")
 
         st.download_button(
-            label="Download Text (.txt)",
+            label="Download Markdown (.md)",
             data=full_text,
-            file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}.txt",
-            mime="text/plain",
+            file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}.md",
+            mime="text/markdown",
         )

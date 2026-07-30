@@ -41,6 +41,8 @@ Edit `.env` (see `.env.example`):
 - `POST /v1/ocr/parse` — multipart form upload (`file`, a PDF or image), returns `application/x-ndjson`
   with `{"type": "info" | "page" | "done" | "error", ...}` lines. PDFs are rasterized page-by-page (via
   PyMuPDF) and each page is OCR'd independently, so pages stream in as they finish; the final `done` event
-  carries the concatenated full document text.
+  carries the concatenated full document as markdown (the model is prompted with
+  `<|grounding|>Convert the document to markdown.`, and `<|det|>`/bbox grounding markers are stripped from
+  the output before it's returned).
 
 Point any app (e.g. the `apps/ocr` Streamlit app) at `http://<this-machine-ip>:<OCR_PORT>/v1/ocr/parse`.
