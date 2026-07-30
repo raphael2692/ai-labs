@@ -100,21 +100,32 @@ def _extract_blocks(infer_return, output_dir: str) -> list[dict]:
     text directly. Prefer the direct return value, otherwise read the most
     recently written result file in output_dir."""
     if isinstance(infer_return, str) and infer_return.strip():
+        logger.info(f"infer() returned a str directly ({len(infer_return)} chars); raw head: {infer_return[:300]!r}")
         return _parse_blocks(infer_return)
     if isinstance(infer_return, dict):
         for key in ("text", "result", "content"):
             value = infer_return.get(key)
             if isinstance(value, str) and value.strip():
+                logger.info(f"infer() returned dict key '{key}' ({len(value)} chars); raw head: {value[:300]!r}")
                 return _parse_blocks(value)
+        logger.info(f"infer() returned a dict with no usable text key; keys={list(infer_return.keys())}")
 
+    all_files = sorted(Path(output_dir).glob("*"))
+    logger.info(
+        f"infer() return value unused (type={type(infer_return)!r}); "
+        f"output_dir contents: {[(p.name, p.stat().st_size) for p in all_files]}"
+    )
     candidates = sorted(
-        (p for p in Path(output_dir).glob("*") if p.suffix.lower() in _RESULT_EXTENSIONS),
+        (p for p in all_files if p.suffix.lower() in _RESULT_EXTENSIONS),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
     if not candidates:
         raise RuntimeError(f"OCR model produced no readable output in {output_dir}")
-    return _parse_blocks(candidates[0].read_text(encoding="utf-8"))
+    chosen = candidates[0]
+    raw = chosen.read_text(encoding="utf-8")
+    logger.info(f"Reading result file '{chosen.name}' ({len(raw)} chars); raw head: {raw[:300]!r}")
+    return _parse_blocks(raw)
 
 
 def create_app() -> FastAPI:
@@ -189,6 +200,8 @@ def create_app() -> FastAPI:
                     image_b64 = base64.b64encode(Path(page_path).read_bytes()).decode("ascii")
 
                     logger.info(f"Page {i}/{total} parsed ({len(page_text)} chars, {len(blocks)} block(s))")
+                    if blocks and not page_text:
+                        logger.warning(f"All {len(blocks)} block(s) had empty/filtered text: {blocks}")
                     yield json.dumps({
                         "type": "page", "index": i, "total": total, "text": page_text,
                         "blocks": blocks, "image_b64": image_b64,
