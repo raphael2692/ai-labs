@@ -19,3 +19,6 @@ apps/*/.env
 
 # Unsloth runtime cache
 servers/unsloth/unsloth_compiled_cache/
+
+# uv lockfile - not tracked, machine-specific
+uv.lock
